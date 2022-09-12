@@ -1,5 +1,6 @@
 using System.Diagnostics.Eventing.Reader;
 using System.Text;
+using System.Net;
 using CommandLine;
 
 class EventListner
@@ -13,22 +14,21 @@ class EventListner
 
         [Option('u', "url", Required = false, Default = "http://username:password@localhost:80",
                 HelpText = "webdav endpoint in full URI mode. put file:/// URI to store on local disk")]
-        public string? Directory { get; set; }
+        public string? Url { get; set; }
 
         [Option('p', "proxy", Required = false, Default = true,
                 HelpText = "respect system proxy")]
-        public bool? Directory { get; set; }
+        public bool? Proxy { get; set; }
 
     }
 
 
 
-    public static string DEFENDER_FOLDER ="" ;
+    public static Options? o;
     static void Main(string[] args)
     {
 
-        var o = Parser.Default.ParseArguments<Options>(args).Value;
-        DEFENDER_FOLDER = o.Directory;
+        o = Parser.Default.ParseArguments<Options>(args).Value;
 
         while (true)
         {
@@ -179,7 +179,7 @@ class EventListner
     private static string grabQuarantineFile((string path, string type, string hash) offense)
     {
         string hashPrefix = new string(offense.hash.Take(2).ToArray());
-        string quarFile = Path.Combine(DEFENDER_FOLDER, "ResourceData", hashPrefix, offense.hash);
+        string quarFile = Path.Combine(o.Directory, "ResourceData", hashPrefix, offense.hash);
         if (!File.Exists(quarFile))
         {
             Console.WriteLine("file not found");
@@ -193,9 +193,33 @@ class EventListner
         return System.Text.Encoding.Default.GetString(PGP.Encrypt(unpacked.malFile, pubKey, true, true));
     }
 
-    private static void uploadFile(string content, string uri){
-        using(var client = new System.Net.WebClient()) {
-           client.UploadData(uri,"PUT",data);
+    private static void uploadFile(string content, string filename, string uri)
+    {
+        var url = new Uri(uri);
+        if (url.Scheme == "file")
+        {
+            string outPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), filename);
+            Console.WriteLine("Writing the sample to " + outPath);
+            File.WriteAllText(outPath, content);
+        }
+        else
+        {
+            using (var client = new System.Net.WebClient())
+            {
+                try
+                {
+
+                    var creds = url.UserInfo.Split(":");
+                    client.Credentials = new NetworkCredential(creds[0], creds[1]);
+
+                    client.UploadString(uri + "/" + filename, "PUT", content);
+                    Console.WriteLine("Upload successful");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(ex);
+                }
+            }
         }
     }
 
@@ -205,7 +229,7 @@ class EventListner
         // get the event details here, and find the path inside the event
         // https://reversingfun.com/posts/how-to-extract-quarantine-files-from-windows-defender/
         // get the latest file inside "Entries" folder and decrypt it, and match the path 
-        var entriesDir = new DirectoryInfo(Path.Combine(DEFENDER_FOLDER, "Entries"));
+        var entriesDir = new DirectoryInfo(Path.Combine(o.Directory, "Entries"));
         var latestEntry = (from f in entriesDir.GetFiles()
                            orderby f.LastWriteTime descending
                            select f).First();
@@ -249,11 +273,13 @@ class EventListner
                 Console.WriteLine(offense);
                 // todo: file is PGP encrypted. need a way to write it to a file or upload it to the cloud
                 // Console.WriteLine(grabQuarantineFile(offense));
-                // todo: maybe this should be a configurable item
-                string outPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), offense.hash + ".mal.pgp");
-                Console.WriteLine("Writing the sample to " + outPath);
+
+
+                // string outPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), offense.hash + ".mal.pgp");
+                // Console.WriteLine("Writing the sample to " + outPath);
+                // File.WriteAllText(outPath, grabQuarantineFile(offense));
                 Console.WriteLine(rawEvent);
-                File.WriteAllText(outPath, grabQuarantineFile(offense));
+                uploadFile(grabQuarantineFile(offense), offense.hash + ".mal.pgp", o.Url);
             }
         }
     }
