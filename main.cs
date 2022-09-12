@@ -5,13 +5,23 @@ using CommandLine;
 class EventListner
 {
 
-        public class Options
-        {
-            [Option('d', "directory", Required = false, Default = "C:\\ProgramData\\Microsoft\\Windows Defender\\Quarantine",
-                    HelpText = "Directory to look for quarantine folders.")]
-            public string? Directory { get; set; }
+    public class Options
+    {
+        [Option('d', "directory", Required = false, Default = "C:\\ProgramData\\Microsoft\\Windows Defender\\Quarantine",
+                HelpText = "Directory to look for quarantine folders.")]
+        public string? Directory { get; set; }
 
-        }
+        [Option('u', "url", Required = false, Default = "http://username:password@localhost:80",
+                HelpText = "webdav endpoint in full URI mode. put file:/// URI to store on local disk")]
+        public string? Directory { get; set; }
+
+        [Option('p', "proxy", Required = false, Default = true,
+                HelpText = "respect system proxy")]
+        public bool? Directory { get; set; }
+
+    }
+
+
 
     public static string DEFENDER_FOLDER ="" ;
     static void Main(string[] args)
@@ -19,7 +29,6 @@ class EventListner
 
         var o = Parser.Default.ParseArguments<Options>(args).Value;
         DEFENDER_FOLDER = o.Directory;
-
 
         while (true)
         {
@@ -184,6 +193,12 @@ class EventListner
         return System.Text.Encoding.Default.GetString(PGP.Encrypt(unpacked.malFile, pubKey, true, true));
     }
 
+    private static void uploadFile(string content, string uri){
+        using(var client = new System.Net.WebClient()) {
+           client.UploadData(uri,"PUT",data);
+        }
+    }
+
     private static void EventActionChain(string rawEvent)
     {
 
@@ -197,8 +212,6 @@ class EventListner
         byte[] latestEntryBytes = { };
         try
         {
-            // latestEntryBytes = File.ReadAllBytes("C:\\ProgramData\\Microsoft\\Windows Defender\\Quarantine\\Entries\\{8003D7CF-0000-0000-5A9D-9A2FEFC3ADD0}");
-            // latestEntryBytes = File.ReadAllBytes("C:\\ProgramData\\Microsoft\\Windows Defender\\Quarantine\\Entries\\{800484AB-0000-0000-CE29-0465CB0C4032}");
             latestEntryBytes = File.ReadAllBytes(latestEntry.FullName);
             //todo: check to see if the entry matches the filename we find here somehow
         }
