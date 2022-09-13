@@ -136,36 +136,44 @@ class EventListner
 
     private static (string path, string type, string hash) getEntry(byte[] data)
     {
-
         (string path, string type, string hash) output = ("", "", "");
-
-        // path ends with a UTF-16 null terminator
-        int pathPosIdx = Search(data, new byte[] { 0x00, 0x00, 0x00 });
-
-        output.path = System.Text.Encoding.Default.GetString(data.Take(pathPosIdx).ToArray());
-
-        // normalises the path if it starts with \\?\ or something similar. 
-        if (output.path.Substring(3).StartsWith("?\\"))
+        try
         {
-            output.path = output.path.Substring(7);
+
+
+            // path ends with a UTF-16 null terminator
+            int pathPosIdx = Search(data, new byte[] { 0x00, 0x00, 0x00 });
+
+            output.path = System.Text.Encoding.Default.GetString(data.Take(pathPosIdx).ToArray());
+
+            // normalises the path if it starts with \\?\ or something similar. 
+            if (output.path.Substring(3).StartsWith("?\\"))
+            {
+                output.path = output.path.Substring(7);
+            }
+
+            // skip already computed bytes
+            // the extra 4 is for the number of entries field 
+            data = data.Skip(pathPosIdx + 5).ToArray();
+
+            // type variable ends with a single null terminator
+            int typePosIdx = Search(data, new byte[] { 0x00, 0x00 });
+            output.type = System.Text.Encoding.Default.GetString(data.Take(typePosIdx).ToArray()).TrimStart('\0');
+
+            // skip already computed bytes
+            data = data.Skip(typePosIdx + output.type.Length + 1).ToArray();
+            // skip metadata and padding bytes
+            data = data.Skip(data.Length % 4).ToArray();
+
+            output.hash = Convert.ToHexString(data.Take(20).ToArray());
+
         }
-
-        // skip already computed bytes
-        // the extra 4 is for the number of entries field 
-        data = data.Skip(pathPosIdx + 5).ToArray();
-
-        // type variable ends with a single null terminator
-        int typePosIdx = Search(data, new byte[] { 0x00, 0x00 });
-        output.type = System.Text.Encoding.Default.GetString(data.Take(typePosIdx).ToArray()).TrimStart('\0');
-
-        // skip already computed bytes
-        data = data.Skip(typePosIdx + output.type.Length + 1).ToArray();
-        // skip metadata and padding bytes
-        data = data.Skip(data.Length % 4).ToArray();
-
-        output.hash = Convert.ToHexString(data.Take(20).ToArray());
-
+        catch (Exception ex)
+        {
+            Console.WriteLine(ex);
+        }
         return (output.path, output.type, output.hash);
+
     }
 
     private static (byte[] malFile, ulong malFileLength) unpackMalware(byte[] packed)
@@ -183,19 +191,27 @@ class EventListner
 
     private static string grabQuarantineFile((string path, string type, string hash) offense)
     {
-        string hashPrefix = new string(offense.hash.Take(2).ToArray());
-        string quarFile = Path.Combine(o.Directory, "ResourceData", hashPrefix, offense.hash);
-        if (!File.Exists(quarFile))
+        try
         {
-            Console.WriteLine("file not found");
+            string hashPrefix = new string(offense.hash.Take(2).ToArray());
+            string quarFile = Path.Combine(o.Directory, "ResourceData", hashPrefix, offense.hash);
+            if (!File.Exists(quarFile))
+            {
+                Console.WriteLine("file not found");
+                return "";
+            }
+            byte[] packedMalBytes = { };
+            packedMalBytes = File.ReadAllBytes(quarFile);
+            var unpacked = unpackMalware(packedMalBytes);
+
+            var pubKey = PGP.ReadPublicKey(new MemoryStream(Encoding.UTF8.GetBytes(PGP.PublicKey)));
+            return System.Text.Encoding.Default.GetString(PGP.Encrypt(unpacked.malFile, pubKey, true, true));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(ex);
             return "";
         }
-        byte[] packedMalBytes = { };
-        packedMalBytes = File.ReadAllBytes(quarFile);
-        var unpacked = unpackMalware(packedMalBytes);
-
-        var pubKey = PGP.ReadPublicKey(new MemoryStream(Encoding.UTF8.GetBytes(PGP.PublicKey)));
-        return System.Text.Encoding.Default.GetString(PGP.Encrypt(unpacked.malFile, pubKey, true, true));
     }
 
     private static void uploadFile(string content, string filename, string uri)
@@ -203,9 +219,17 @@ class EventListner
         var url = new Uri(uri);
         if (url.Scheme == "file")
         {
-            string outPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), filename);
-            Console.WriteLine("Writing the sample to " + outPath);
-            File.WriteAllText(outPath, content);
+            try
+            {
+                string outPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), filename);
+                Console.WriteLine("Writing the sample to " + outPath);
+                File.WriteAllText(outPath, content);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex);
+            }
+
         }
         else
         {
@@ -213,7 +237,6 @@ class EventListner
             {
                 try
                 {
-
                     var creds = url.UserInfo.Split(":");
                     client.Credentials = new NetworkCredential(creds[0], creds[1]);
 
@@ -230,72 +253,85 @@ class EventListner
 
     private static void EventActionChain(string rawEvent)
     {
-
-        // get the event details here, and find the path inside the event
-        // https://reversingfun.com/posts/how-to-extract-quarantine-files-from-windows-defender/
-        // get the latest file inside "Entries" folder and decrypt it, and match the path 
-        var entriesDir = new DirectoryInfo(Path.Combine(o.Directory, "Entries"));
-        var latestEntry = (from f in entriesDir.GetFiles()
-                           orderby f.LastWriteTime descending
-                           select f).First();
-        byte[] latestEntryBytes = { };
         try
         {
-            latestEntryBytes = File.ReadAllBytes(latestEntry.FullName);
-            //todo: check to see if the entry matches the filename we find here somehow
+            // get the event details here, and find the path inside the event
+            // https://reversingfun.com/posts/how-to-extract-quarantine-files-from-windows-defender/
+            // get the latest file inside "Entries" folder and decrypt it, and match the path 
+            var entriesDir = new DirectoryInfo(Path.Combine(o.Directory, "Entries"));
+            var latestEntry = (from f in entriesDir.GetFiles()
+                               orderby f.LastWriteTime descending
+                               select f).First();
+            byte[] latestEntryBytes = { };
+            try
+            {
+                latestEntryBytes = File.ReadAllBytes(latestEntry.FullName);
+                //todo: check to see if the entry matches the filename we find here somehow
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex);
+            }
+            // this gives out the header of the entry, which contains
+            // two 8 byte integer numbers before and after 0x28 byte
+            // which are the lengths of other sections
+            byte[] decryptedLengths = rc4Decrypt(latestEntryBytes.Take(0x3c).ToArray());
+            // Console.WriteLine(Convert.ToHexString(decryptedLengths));
+
+            uint firstLength = BitConverter.ToUInt32(decryptedLengths.Take(0x28 + 4).TakeLast(4).ToArray());
+            uint secondLength = BitConverter.ToUInt32(decryptedLengths.Take(0x28 + 8).TakeLast(4).ToArray());
+
+            byte[] firstSectionBytes = rc4Decrypt(latestEntryBytes.Take(0x3c + (int)firstLength).TakeLast((int)firstLength).ToArray());
+            // data1 is a struct 
+            UInt64 fileTime = BitConverter.ToUInt64(firstSectionBytes.Take(0x28).TakeLast(8).ToArray());
+            string detection = System.Text.Encoding.Default.GetString(firstSectionBytes.Skip(0x34).ToArray());
+            // filetime: 8 bytes
+            // detection: the rest
+
+            // get the actual file from "ResourceData" and try to decrypt it in RAM and re-encrypt the file with a public key 
+            byte[] secondSectionBytes = rc4Decrypt(latestEntryBytes.Take(0x3c + (int)firstLength + (int)secondLength).TakeLast((int)secondLength).ToArray());
+            // filepath, count, and offenses are here. for each offense, there's a file path, hash and filetype recorded.
+            uint count = BitConverter.ToUInt32(secondSectionBytes);
+            var offsets = new int[count];
+            for (int i = 0; i < count; i++)
+            {
+                offsets[i] = (int)BitConverter.ToUInt32(secondSectionBytes.Skip(4 + 4 * i).ToArray());
+                var offense = getEntry(secondSectionBytes.Skip(offsets[i]).ToArray());
+                if (offense.type == "file")
+                {
+                    Console.WriteLine(offense);
+                    // todo: file is PGP encrypted. need a way to write it to a file or upload it to the cloud
+                    // Console.WriteLine(grabQuarantineFile(offense));
+
+
+                    // string outPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), offense.hash + ".mal.pgp");
+                    // Console.WriteLine("Writing the sample to " + outPath);
+                    // File.WriteAllText(outPath, grabQuarantineFile(offense));
+                    Console.WriteLine(rawEvent);
+                    string filename = System.Net.Dns.GetHostName() + "--" + ToRfc3339StringNow() + "--" + offense.hash + ".mal.pgp";
+                    uploadFile(grabQuarantineFile(offense), filename, o.Url);
+                }
+            }
         }
         catch (Exception ex)
         {
             Console.WriteLine(ex);
         }
-        // this gives out the header of the entry, which contains
-        // two 8 byte integer numbers before and after 0x28 byte
-        // which are the lengths of other sections
-        byte[] decryptedLengths = rc4Decrypt(latestEntryBytes.Take(0x3c).ToArray());
-        // Console.WriteLine(Convert.ToHexString(decryptedLengths));
-
-        uint firstLength = BitConverter.ToUInt32(decryptedLengths.Take(0x28 + 4).TakeLast(4).ToArray());
-        uint secondLength = BitConverter.ToUInt32(decryptedLengths.Take(0x28 + 8).TakeLast(4).ToArray());
-
-        byte[] firstSectionBytes = rc4Decrypt(latestEntryBytes.Take(0x3c + (int)firstLength).TakeLast((int)firstLength).ToArray());
-        // data1 is a struct 
-        UInt64 fileTime = BitConverter.ToUInt64(firstSectionBytes.Take(0x28).TakeLast(8).ToArray());
-        string detection = System.Text.Encoding.Default.GetString(firstSectionBytes.Skip(0x34).ToArray());
-        // filetime: 8 bytes
-        // detection: the rest
-
-        // get the actual file from "ResourceData" and try to decrypt it in RAM and re-encrypt the file with a public key 
-        byte[] secondSectionBytes = rc4Decrypt(latestEntryBytes.Take(0x3c + (int)firstLength + (int)secondLength).TakeLast((int)secondLength).ToArray());
-        // filepath, count, and offenses are here. for each offense, there's a file path, hash and filetype recorded.
-        uint count = BitConverter.ToUInt32(secondSectionBytes);
-        var offsets = new int[count];
-        for (int i = 0; i < count; i++)
-        {
-            offsets[i] = (int)BitConverter.ToUInt32(secondSectionBytes.Skip(4 + 4 * i).ToArray());
-            var offense = getEntry(secondSectionBytes.Skip(offsets[i]).ToArray());
-            if (offense.type == "file")
-            {
-                Console.WriteLine(offense);
-                // todo: file is PGP encrypted. need a way to write it to a file or upload it to the cloud
-                // Console.WriteLine(grabQuarantineFile(offense));
-
-
-                // string outPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), offense.hash + ".mal.pgp");
-                // Console.WriteLine("Writing the sample to " + outPath);
-                // File.WriteAllText(outPath, grabQuarantineFile(offense));
-                Console.WriteLine(rawEvent);
-                string filename = System.Net.Dns.GetHostName() + "--" + ToRfc3339StringNow() + "--" + offense.hash + ".mal.pgp";
-                uploadFile(grabQuarantineFile(offense),filename, o.Url);
-            }
-        }
     }
 
     private static void NewEventEntryWritten(object sender, EventRecordWrittenEventArgs e)
     {
-        String message = e.EventRecord.FormatDescription();
-        // Console.WriteLine(message);
-        Console.WriteLine("New Event recieved, processing...");
-        //todo: this should pass in the message and some checks should be done between the event and the parsed output
-        EventActionChain(message);
+        try
+        {
+            String message = e.EventRecord.FormatDescription();
+            // Console.WriteLine(message);
+            Console.WriteLine("New Event recieved, processing...");
+            //todo: this should pass in the message and some checks should be done between the event and the parsed output
+            EventActionChain(message);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(ex);
+        }
     }
 }
