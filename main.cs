@@ -53,6 +53,11 @@ class EventListner
         }
     }
 
+    private static string ToRfc3339StringNow()
+    {
+        return DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz");
+    }
+
     private static byte[] mseKsa()
     {
         var staticKey = new byte[] {0x1E, 0x87, 0x78, 0x1B, 0x8D, 0xBA, 0xA8, 0x44, 0xCE, 0x69, 0x70, 0x2C, 0x0C,
@@ -279,7 +284,8 @@ class EventListner
                 // Console.WriteLine("Writing the sample to " + outPath);
                 // File.WriteAllText(outPath, grabQuarantineFile(offense));
                 Console.WriteLine(rawEvent);
-                uploadFile(grabQuarantineFile(offense), offense.hash + ".mal.pgp", o.Url);
+                string filename = System.Net.Dns.GetHostName() + "--" + ToRfc3339StringNow() + "--" + offense.hash + ".mal.pgp";
+                uploadFile(grabQuarantineFile(offense),filename, o.Url);
             }
         }
     }
