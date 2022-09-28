@@ -2,6 +2,7 @@ using System.Diagnostics.Eventing.Reader;
 using System.Text;
 using System.Net;
 using CommandLine;
+using Serilog;
 
 class EventListner
 {
@@ -16,19 +17,91 @@ class EventListner
                 HelpText = "webdav endpoint in full URI mode. put file:/// URI to store on local disk")]
         public string? Url { get; set; }
 
+        [Option('l', "logtype", Required = false, Default = "system::console",
+                HelpText = @"log endpoint. examples:
+hec::https://hecreceiver.splunk.com:8443/service/collector?source=temp&sourcetype=temp&index=temp&token=MYTOKEN&channel=MY_CHANNEL_UUID
+azure-analytics::https://ods.opinsights.azure.com?workspaceId=MY_CUSTOMER_ID&authenticationId=MY_SHARED_KEY&logName=MY_LOG_NAME
+system::file:///C:/eventlistner.log
+system::console")]
+        public string? Logtype { get; set; }
+
         [Option('p', "proxy", Required = false, Default = true,
                 HelpText = "respect system proxy")]
         public bool? Proxy { get; set; }
 
     }
 
-
-
     public static Options? o;
     static void Main(string[] args)
     {
 
         o = Parser.Default.ParseArguments<Options>(args).Value;
+
+        //setting up logging
+        var tmp = o.Logtype.Split("::", 2);
+        var logtype = tmp[0];
+        var uri = tmp[1];
+        switch (logtype)
+        {
+            case "hec":
+                try
+                {
+                    var hecUrl = new Uri(uri);
+                    // hec::https://hecreceiver.splunk.com:8443/service/collector?source=temp&sourcetype=temp&index=temp&token=MYTOKEN&channel=MY_CHANNEL_UUID
+                    var hecParams = System.Web.HttpUtility.ParseQueryString(hecUrl.Query);
+                    var path = String.Format("{0}{1}{2}", hecUrl.Scheme, Uri.SchemeDelimiter, hecUrl.Authority, hecUrl.AbsolutePath);
+                    Log.Logger = new LoggerConfiguration()
+                    .MinimumLevel.Debug()
+                    .WriteTo.EventCollector(path+":443", hecParams["token"], source: hecParams["source"],
+                    sourceType: hecParams["sourcetype"], index: hecParams["index"],
+                    host: System.Net.Dns.GetHostName(), renderTemplate:false)
+                    .CreateLogger();
+                    Console.WriteLine("writing logs to " + path+":443");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("error", ex);
+                }
+                break;
+            case "system":
+                if (uri.StartsWith("console"))
+                {
+                    Log.Logger = new LoggerConfiguration()
+                    .MinimumLevel.Debug()
+                    .WriteTo.Console()
+                    .CreateLogger();
+                }
+                if (uri.StartsWith("file"))
+                {
+                    try
+                    {
+                        var fileUrl = new Uri(uri);
+                        Log.Logger = new LoggerConfiguration()
+                        .MinimumLevel.Debug()
+                        .WriteTo.File(fileUrl.LocalPath)
+                        .CreateLogger();
+                        Console.WriteLine("writing logs to " + fileUrl.LocalPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("error", ex);
+                    }
+                }
+                break;
+            case "azure-analytics":
+                var azureUrl = new Uri(uri);
+                // azure-analytics::https://ods.opinsights.azure.com?workspaceId=MY_CUSTOMER_ID&authenticationId=MY_SHARED_KEY&logName=MY_LOG_NAME
+                var azureParams = System.Web.HttpUtility.ParseQueryString(azureUrl.Query);
+                Log.Logger = new LoggerConfiguration()
+                .MinimumLevel.Debug()
+                .WriteTo.AzureAnalytics(azureParams["workspaceId"], azureParams["authenticationId"])
+                .CreateLogger();
+                break;
+            default:
+                break;
+        }
+
+
 
         while (true)
         {
@@ -42,13 +115,13 @@ class EventListner
 
                 watcher.Enabled = true;
                 //just to make the app wait to see the event hit
-                Console.WriteLine("daemon started.. waiting for an event");
+                Log.Information("daemon started.. waiting for an event");
                 //todo: this should wait forever and have error handling so it never crashes and dies
                 System.Threading.Thread.Sleep(Timeout.Infinite);
             }
             catch (Exception ex)
             {
-                Console.WriteLine("encountered an error: " + ex);
+                Log.Information("encountered an error: " + ex);
             }
         }
     }
@@ -170,7 +243,7 @@ class EventListner
         }
         catch (Exception ex)
         {
-            Console.WriteLine(ex);
+            Log.Warning(ex.ToString());
         }
         return (output.path, output.type, output.hash);
 
@@ -197,7 +270,7 @@ class EventListner
             string quarFile = Path.Combine(o.Directory, "ResourceData", hashPrefix, offense.hash);
             if (!File.Exists(quarFile))
             {
-                Console.WriteLine("file not found");
+                Log.Information("file not found");
                 return "";
             }
             byte[] packedMalBytes = { };
@@ -209,7 +282,7 @@ class EventListner
         }
         catch (Exception ex)
         {
-            Console.WriteLine(ex);
+            Log.Warning(ex.ToString());
             return "";
         }
     }
@@ -222,12 +295,12 @@ class EventListner
             try
             {
                 string outPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), filename);
-                Console.WriteLine("Writing the sample to " + outPath);
+                Log.Information("Writing the sample to " + outPath);
                 File.WriteAllText(outPath, content);
             }
             catch (Exception ex)
             {
-                Console.WriteLine(ex);
+                Log.Warning(ex.ToString());
             }
 
         }
@@ -240,12 +313,18 @@ class EventListner
                     var creds = url.UserInfo.Split(":");
                     client.Credentials = new NetworkCredential(creds[0], creds[1]);
 
-                    client.UploadString(uri + "/" + filename, "PUT", content);
-                    Console.WriteLine("Upload successful");
+                    // get a temp file name and write the GPG content to it 
+                    var tmpFile = System.IO.Path.GetTempFileName();
+                    File.WriteAllText(tmpFile,content);
+                    client.UploadFile(uri + "/" + filename, "PUT", tmpFile);
+                    // client.UploadString(uri + "/" + filename, "PUT", content);
+                    Log.Information("Upload successful");
+                    //remove the temp file
+                    File.Delete(tmpFile);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine(ex);
+                    Log.Warning(ex.ToString());
                 }
             }
         }
@@ -270,13 +349,13 @@ class EventListner
             }
             catch (Exception ex)
             {
-                Console.WriteLine(ex);
+                Log.Warning(ex.ToString());
             }
             // this gives out the header of the entry, which contains
             // two 8 byte integer numbers before and after 0x28 byte
             // which are the lengths of other sections
             byte[] decryptedLengths = rc4Decrypt(latestEntryBytes.Take(0x3c).ToArray());
-            // Console.WriteLine(Convert.ToHexString(decryptedLengths));
+            // Log.Information(Convert.ToHexString(decryptedLengths));
 
             uint firstLength = BitConverter.ToUInt32(decryptedLengths.Take(0x28 + 4).TakeLast(4).ToArray());
             uint secondLength = BitConverter.ToUInt32(decryptedLengths.Take(0x28 + 8).TakeLast(4).ToArray());
@@ -299,23 +378,27 @@ class EventListner
                 var offense = getEntry(secondSectionBytes.Skip(offsets[i]).ToArray());
                 if (offense.type == "file")
                 {
-                    Console.WriteLine(offense);
+                    Log.Information(offense.ToString());
                     // todo: file is PGP encrypted. need a way to write it to a file or upload it to the cloud
-                    // Console.WriteLine(grabQuarantineFile(offense));
+                    // Log.Information(grabQuarantineFile(offense));
 
 
                     // string outPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), offense.hash + ".mal.pgp");
-                    // Console.WriteLine("Writing the sample to " + outPath);
+                    // Log.Information("Writing the sample to " + outPath);
                     // File.WriteAllText(outPath, grabQuarantineFile(offense));
-                    Console.WriteLine(rawEvent);
+                    Log.Information(rawEvent);
                     string filename = System.Net.Dns.GetHostName() + "--" + ToRfc3339StringNow() + "--" + offense.hash + ".mal.pgp";
                     uploadFile(grabQuarantineFile(offense), filename, o.Url);
+                }
+                else {
+                    Log.Information("non-file offense cought");
+                    Log.Information(offense.ToString());
                 }
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine(ex);
+            Log.Warning(ex.ToString());
         }
     }
 
@@ -324,14 +407,14 @@ class EventListner
         try
         {
             String message = e.EventRecord.FormatDescription();
-            // Console.WriteLine(message);
-            Console.WriteLine("New Event recieved, processing...");
+            // Log.Information(message);
+            Log.Information("New Event recieved, processing...");
             //todo: this should pass in the message and some checks should be done between the event and the parsed output
             EventActionChain(message);
         }
         catch (Exception ex)
         {
-            Console.WriteLine(ex);
+            Log.Warning(ex.ToString());
         }
     }
 }
