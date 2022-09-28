@@ -1,6 +1,5 @@
 using System.Diagnostics.Eventing.Reader;
 using System.Text;
-using System.IO;
 using System.Net;
 using CommandLine;
 using Serilog;
