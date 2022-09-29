@@ -4,8 +4,13 @@ using System.Net;
 using CommandLine;
 using Serilog;
 
+using Azure.Storage.Blobs;
+
 class EventListner
 {
+
+    // uploadedHashes is used to deduplicate files before uploading multiple instance of the same file
+    public static List<string>? uploadedHashes;
 
     public class Options
     {
@@ -13,9 +18,12 @@ class EventListner
                 HelpText = "Directory to look for quarantine folders.")]
         public string? Directory { get; set; }
 
-        [Option('u', "url", Required = false, Default = "http://username:password@localhost:80",
-                HelpText = "webdav endpoint in full URI mode. put file:/// URI to store on local disk")]
-        public string? Url { get; set; }
+        [Option('a', "archive", Required = false, Default = "system::file:///C:/outputDir",
+                HelpText = @"storage endpoint to store artifacts. Examples:
+system::file:///C:/outputDir
+webdav::https://username:password@localhost:80
+blob::https://MYACCOUNT.blob.core.windows.net/MYCONTAINER/MYBLOB?MYSASTOKEN. SASTOKEN looks like this: sp=racwdlmeop&st=2022-09-29T00:55:42Z&se=2024-09-29T08:55:42Z&spr=https&sv=2021-06-08&sr=c&sig=SASSIGNATURE")]
+        public string? Archive { get; set; }
 
         [Option('l', "logtype", Required = false, Default = "system::console",
                 HelpText = @"log endpoint. examples:
@@ -39,24 +47,24 @@ system::console")]
 
         //setting up logging
         var tmp = o.Logtype.Split("::", 2);
-        var logtype = tmp[0];
-        var uri = tmp[1];
-        switch (logtype)
+        var logType = tmp[0];
+        var logUri = tmp[1];
+        switch (logType)
         {
             case "hec":
                 try
                 {
-                    var hecUrl = new Uri(uri);
+                    var hecUrl = new Uri(logUri);
                     // hec::https://hecreceiver.splunk.com:8443/service/collector?source=temp&sourcetype=temp&index=temp&token=MYTOKEN&channel=MY_CHANNEL_UUID
                     var hecParams = System.Web.HttpUtility.ParseQueryString(hecUrl.Query);
                     var path = String.Format("{0}{1}{2}", hecUrl.Scheme, Uri.SchemeDelimiter, hecUrl.Authority, hecUrl.AbsolutePath);
                     Log.Logger = new LoggerConfiguration()
                     .MinimumLevel.Debug()
-                    .WriteTo.EventCollector(path+":443", hecParams["token"], source: hecParams["source"],
+                    .WriteTo.EventCollector(path + ":443", hecParams["token"], source: hecParams["source"],
                     sourceType: hecParams["sourcetype"], index: hecParams["index"],
-                    host: System.Net.Dns.GetHostName(), renderTemplate:false)
+                    host: System.Net.Dns.GetHostName(), renderTemplate: false)
                     .CreateLogger();
-                    Console.WriteLine("writing logs to " + path+":443");
+                    Console.WriteLine("writing logs to " + path + ":443");
                 }
                 catch (Exception ex)
                 {
@@ -64,18 +72,18 @@ system::console")]
                 }
                 break;
             case "system":
-                if (uri.StartsWith("console"))
+                if (logUri.StartsWith("console"))
                 {
                     Log.Logger = new LoggerConfiguration()
                     .MinimumLevel.Debug()
                     .WriteTo.Console()
                     .CreateLogger();
                 }
-                if (uri.StartsWith("file"))
+                if (logUri.StartsWith("file"))
                 {
                     try
                     {
-                        var fileUrl = new Uri(uri);
+                        var fileUrl = new Uri(logUri);
                         Log.Logger = new LoggerConfiguration()
                         .MinimumLevel.Debug()
                         .WriteTo.File(fileUrl.LocalPath)
@@ -89,7 +97,7 @@ system::console")]
                 }
                 break;
             case "azure-analytics":
-                var azureUrl = new Uri(uri);
+                var azureUrl = new Uri(logUri);
                 // azure-analytics::https://ods.opinsights.azure.com?workspaceId=MY_CUSTOMER_ID&authenticationId=MY_SHARED_KEY&logName=MY_LOG_NAME
                 var azureParams = System.Web.HttpUtility.ParseQueryString(azureUrl.Query);
                 Log.Logger = new LoggerConfiguration()
@@ -287,47 +295,83 @@ system::console")]
         }
     }
 
-    private static void uploadFile(string content, string filename, string uri)
+    private static void uploadFile(string content, string filename, string hash, string archive)
     {
-        var url = new Uri(uri);
-        if (url.Scheme == "file")
-        {
-            try
-            {
-                string outPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), filename);
-                Log.Information("Writing the sample to " + outPath);
-                File.WriteAllText(outPath, content);
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex.ToString());
-            }
+        var tmp = archive.Split("::", 2);
+        var archType = tmp[0];
+        var archUri = new Uri(tmp[1]);
+        // get a temp file name and write the GPG content to it 
+        var tmpFile = System.IO.Path.GetTempFileName();
+        File.WriteAllText(tmpFile, content);
 
-        }
-        else
+        switch (archType)
         {
-            using (var client = new System.Net.WebClient())
-            {
+            case "system":
                 try
                 {
-                    var creds = url.UserInfo.Split(":");
-                    client.Credentials = new NetworkCredential(creds[0], creds[1]);
+                    // var url = new Uri(archUri);
+                    if (archUri.Scheme == "file")
+                    {
 
-                    // get a temp file name and write the GPG content to it 
-                    var tmpFile = System.IO.Path.GetTempFileName();
-                    File.WriteAllText(tmpFile,content);
-                    client.UploadFile(uri + "/" + filename, "PUT", tmpFile);
-                    // client.UploadString(uri + "/" + filename, "PUT", content);
-                    Log.Information("Upload successful");
-                    //remove the temp file
-                    File.Delete(tmpFile);
+                        string outPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), filename);
+                        Log.Information("Writing the sample to " + outPath);
+                        File.WriteAllText(outPath, content);
+                    }
                 }
                 catch (Exception ex)
                 {
                     Log.Warning(ex.ToString());
                 }
-            }
+                break;
+
+            case "webdav":
+                using (var client = new System.Net.WebClient())
+                {
+                    try
+                    {
+                        // var url = new Uri(archUri);
+                        var creds = archUri.UserInfo.Split(":");
+                        client.Credentials = new NetworkCredential(creds[0], creds[1]);
+
+                        client.UploadFile(archUri + "/" + filename, "PUT", tmpFile);
+                        // client.UploadString(uri + "/" + filename, "PUT", content);
+                        Log.Information("Upload successful");
+
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex.ToString());
+                    }
+                }
+                break;
+
+            case "blob":
+
+                try
+                {
+                    var newUri = new Uri(archUri.GetLeftPart(UriPartial.Authority) + filename + archUri.Query);
+                    var blob = new BlobClient(newUri);
+                    blob.Upload(tmpFile);
+                    Log.Information("Upload successful");
+                    uploadedHashes.Add(hash);
+
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex.ToString());
+                }
+
+                break;
+
+            default:
+                break;
         }
+
+
+        //remove the temp file
+        File.Delete(tmpFile);
+
+
     }
 
     private static void EventActionChain(string rawEvent)
@@ -388,9 +432,17 @@ system::console")]
                     // File.WriteAllText(outPath, grabQuarantineFile(offense));
                     Log.Information(rawEvent);
                     string filename = System.Net.Dns.GetHostName() + "--" + ToRfc3339StringNow() + "--" + offense.hash + ".mal.pgp";
-                    uploadFile(grabQuarantineFile(offense), filename, o.Url);
+                    if (uploadedHashes.Contains(offense.hash))
+                    {
+                        Log.Information("skipping duplicate upload");
+                    }
+                    else
+                    {
+                        uploadFile(grabQuarantineFile(offense), filename, offense.hash, o.Archive);
+                    }
                 }
-                else {
+                else
+                {
                     Log.Information("non-file offense cought");
                     Log.Information(offense.ToString());
                 }
