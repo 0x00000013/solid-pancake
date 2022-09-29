@@ -5,6 +5,7 @@ using CommandLine;
 using Serilog;
 
 using Azure.Storage.Blobs;
+using System.Threading;
 
 class EventListner
 {
@@ -144,12 +145,7 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
         }
     }
 
-    static void Main(string[] args)
-    {
-
-        o = Parser.Default.ParseArguments<Options>(args).Value;
-        //todo: exit on --help
-        ValidateArgs();
+    static void QuarantineEventListener(){
 
         while (true)
         {
@@ -159,7 +155,7 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
                 var logQuery = new EventLogQuery("Microsoft-Windows-Windows Defender/Operational", PathType.LogName, query);
                 EventLogWatcher watcher = new EventLogWatcher(logQuery);
 
-                watcher.EventRecordWritten += NewEventEntryWritten;
+                watcher.EventRecordWritten += QuarantineEventReceiver;
 
                 watcher.Enabled = true;
                 //just to make the app wait to see the event hit
@@ -172,6 +168,19 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
                 Log.Information("encountered an error: " + ex);
             }
         }
+    }
+
+    static void Main(string[] args)
+    {
+
+        o = Parser.Default.ParseArguments<Options>(args).Value;
+        //todo: exit on --help
+        ValidateArgs();
+
+        // start quarantine event listener
+        Thread quarantineThread = new Thread(QuarantineEventListener);
+        quarantineThread.Start();
+
     }
 
     private static string ToRfc3339StringNow()
@@ -493,7 +502,7 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
         }
     }
 
-    private static void NewEventEntryWritten(object sender, EventRecordWrittenEventArgs e)
+    private static void QuarantineEventReceiver(object sender, EventRecordWrittenEventArgs e)
     {
         try
         {
