@@ -10,8 +10,7 @@ class EventListner
 {
 
     // uploadedHashes is used to deduplicate files before uploading multiple instance of the same file
-    public static List<string>? uploadedHashes;
-
+    public static List<string> uploadedHashes = new List<string>();
     public class Options
     {
         [Option('d', "directory", Required = false, Default = "C:\\ProgramData\\Microsoft\\Windows Defender\\Quarantine",
@@ -349,7 +348,7 @@ system::console")]
 
                 try
                 {
-                    var newUri = new Uri(archUri.GetLeftPart(UriPartial.Authority) + filename + archUri.Query);
+                    var newUri = new Uri(archUri.GetLeftPart(UriPartial.Authority) + archUri.LocalPath + "/" + filename + archUri.Query);
                     var blob = new BlobClient(newUri);
                     blob.Upload(tmpFile);
                     Log.Information("Upload successful");
