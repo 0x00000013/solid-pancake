@@ -5,24 +5,25 @@ using CommandLine;
 using Serilog;
 
 using Azure.Storage.Blobs;
+using System.Threading;
 
 class EventListner
 {
-
+    public static Options o = new Options();
     // uploadedHashes is used to deduplicate files before uploading multiple instance of the same file
     public static List<string> uploadedHashes = new List<string>();
     public class Options
     {
         [Option('d', "directory", Required = false, Default = "C:\\ProgramData\\Microsoft\\Windows Defender\\Quarantine",
                 HelpText = "Directory to look for quarantine folders.")]
-        public string? Directory { get; set; }
+        public string Directory { get; set; }
 
         [Option('a', "archive", Required = false, Default = "system::file:///C:/outputDir",
                 HelpText = @"storage endpoint to store artifacts. Examples:
 system::file:///C:/outputDir
 webdav::https://username:password@localhost:80
 blob::https://MYACCOUNT.blob.core.windows.net/MYCONTAINER/MYBLOB?MYSASTOKEN. SASTOKEN looks like this: sp=racwdlmeop&st=2022-09-29T00:55:42Z&se=2024-09-29T08:55:42Z&spr=https&sv=2021-06-08&sr=c&sig=SASSIGNATURE")]
-        public string? Archive { get; set; }
+        public string Archive { get; set; }
 
         [Option('l', "logtype", Required = false, Default = "system::console",
                 HelpText = @"log endpoint. examples:
@@ -30,20 +31,20 @@ hec::https://hecreceiver.splunk.com:8443/service/collector?source=temp&sourcetyp
 azure-analytics::https://ods.opinsights.azure.com?workspaceId=MY_CUSTOMER_ID&authenticationId=MY_SHARED_KEY&logName=MY_LOG_NAME
 system::file:///C:/eventlistner.log
 system::console")]
-        public string? Logtype { get; set; }
+        public string Logtype { get; set; }
 
-        [Option('p', "proxy", Required = false, Default = true,
-                HelpText = "respect system proxy")]
-        public bool? Proxy { get; set; }
-
+        [Option('e', "encryptionkey", Required = false, Default = "system::file:///pubkey.asc",
+                HelpText = @"GPG public key to encrypt artifacts. Examples:
+system::file:///pubkey.asc
+url::https://github.com/mosajjal.gpg
+base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBCTE9DSy0tLS0tCg==")]
+        public string EncryptionKey { get; set; }
+        public Org.BouncyCastle.Bcpg.OpenPgp.PgpPublicKey? GpgKey;
     }
 
-    public static Options? o;
-    static void Main(string[] args)
-    {
 
-        o = Parser.Default.ParseArguments<Options>(args).Value;
-
+    static void ValidateArgs(){
+        try{
         //setting up logging
         var tmp = o.Logtype.Split("::", 2);
         var logType = tmp[0];
@@ -105,10 +106,46 @@ system::console")]
                 .CreateLogger();
                 break;
             default:
+                //todo: throw an error
+                Log.Fatal("Logging could not be setup.. exiting");
+                Environment.Exit(1);
                 break;
         }
 
+        // set up the PGP key
+        tmp = o.EncryptionKey.Split("::", 2);
+        var gpgType = tmp[0];
+        var gpgUri = tmp[1];
 
+        switch (gpgType)
+        {
+            case "system":
+                o.GpgKey = PGP.ReadPublicKey(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(new Uri(gpgUri).PathAndQuery))));
+                Log.Information("Loaded GPG key from path");
+            break;
+            case "url":
+                using (var wc = new System.Net.WebClient())
+                o.GpgKey = PGP.ReadPublicKey(new MemoryStream(Encoding.UTF8.GetBytes(wc.DownloadString(gpgUri))));
+                Log.Information("Loaded GPG key from the URL");
+            break;
+            case "base64":
+                o.GpgKey = PGP.ReadPublicKey(new MemoryStream(Convert.FromBase64String(gpgUri)));
+                Log.Information("Loaded GPG key from base64");
+            break;
+            default:
+            Log.Fatal("GPG could not be setup.. exiting");
+            Environment.Exit(1);
+            break;
+        }
+        }
+        catch (Exception e){
+            Log.Fatal("Failed to validate Arguments.. exiting");
+            Log.Fatal(e.ToString());
+            Environment.Exit(1);
+        }
+    }
+
+    static void QuarantineEventListener(){
 
         while (true)
         {
@@ -118,7 +155,7 @@ system::console")]
                 var logQuery = new EventLogQuery("Microsoft-Windows-Windows Defender/Operational", PathType.LogName, query);
                 EventLogWatcher watcher = new EventLogWatcher(logQuery);
 
-                watcher.EventRecordWritten += NewEventEntryWritten;
+                watcher.EventRecordWritten += QuarantineEventReceiver;
 
                 watcher.Enabled = true;
                 //just to make the app wait to see the event hit
@@ -131,6 +168,19 @@ system::console")]
                 Log.Information("encountered an error: " + ex);
             }
         }
+    }
+
+    static void Main(string[] args)
+    {
+
+        o = Parser.Default.ParseArguments<Options>(args).Value;
+        //todo: exit on --help
+        ValidateArgs();
+
+        // start quarantine event listener
+        Thread quarantineThread = new Thread(QuarantineEventListener);
+        quarantineThread.Start();
+
     }
 
     private static string ToRfc3339StringNow()
@@ -284,8 +334,7 @@ system::console")]
             packedMalBytes = File.ReadAllBytes(quarFile);
             var unpacked = unpackMalware(packedMalBytes);
 
-            var pubKey = PGP.ReadPublicKey(new MemoryStream(Encoding.UTF8.GetBytes(PGP.PublicKey)));
-            return System.Text.Encoding.Default.GetString(PGP.Encrypt(unpacked.malFile, pubKey, true, true));
+            return System.Text.Encoding.Default.GetString(PGP.Encrypt(unpacked.malFile, o.GpgKey, true, true));
         }
         catch (Exception ex)
         {
@@ -453,7 +502,7 @@ system::console")]
         }
     }
 
-    private static void NewEventEntryWritten(object sender, EventRecordWrittenEventArgs e)
+    private static void QuarantineEventReceiver(object sender, EventRecordWrittenEventArgs e)
     {
         try
         {
