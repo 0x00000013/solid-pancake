@@ -55,62 +55,62 @@ class PGP
         return pgpSecKey.ExtractPrivateKey(pass);
     }
 
-        /**
-        * Encrypt the data.
-        *
-        * @param inputData - byte array to encrypt
-        * @param passPhrase - the password returned by "ReadPublicKey"
-        * @param withIntegrityCheck - check the data for errors
-        * @param armor - protect the data streams
-        * @return - encrypted byte array
-        */
-        public static byte[] Encrypt(byte[] inputData, PgpPublicKey passPhrase, bool withIntegrityCheck, bool armor)
-        {
-            byte[] processedData = Compress(inputData, PgpLiteralData.Console, CompressionAlgorithmTag.Uncompressed);
+    /**
+    * Encrypt the data.
+    *
+    * @param inputData - byte array to encrypt
+    * @param passPhrase - the password returned by "ReadPublicKey"
+    * @param withIntegrityCheck - check the data for errors
+    * @param armor - protect the data streams
+    * @return - encrypted byte array
+    */
+    public static byte[] Encrypt(byte[] inputData, PgpPublicKey passPhrase, bool withIntegrityCheck, bool armor)
+    {
+        byte[] processedData = Compress(inputData, PgpLiteralData.Console, CompressionAlgorithmTag.Uncompressed);
 
-            MemoryStream bOut = new MemoryStream();
-            Stream output = bOut;
+        MemoryStream bOut = new MemoryStream();
+        Stream output = bOut;
 
-            if (armor)
-                output = new ArmoredOutputStream(output);
+        if (armor)
+            output = new ArmoredOutputStream(output);
 
-            PgpEncryptedDataGenerator encGen = new PgpEncryptedDataGenerator(SymmetricKeyAlgorithmTag.Cast5, withIntegrityCheck, new SecureRandom());
-            encGen.AddMethod(passPhrase);
+        PgpEncryptedDataGenerator encGen = new PgpEncryptedDataGenerator(SymmetricKeyAlgorithmTag.Cast5, withIntegrityCheck, new SecureRandom());
+        encGen.AddMethod(passPhrase);
 
-            Stream encOut = encGen.Open(output, processedData.Length);
+        Stream encOut = encGen.Open(output, processedData.Length);
 
-            encOut.Write(processedData, 0, processedData.Length);
-            encOut.Close();
+        encOut.Write(processedData, 0, processedData.Length);
+        encOut.Close();
 
-            if (armor)
-                output.Close();
+        if (armor)
+            output.Close();
 
-            return bOut.ToArray();
-        }
-
-        private static byte[] Compress(byte[] clearData, string fileName, CompressionAlgorithmTag algorithm)
-        {
-            MemoryStream bOut = new MemoryStream();
-
-            PgpCompressedDataGenerator comData = new PgpCompressedDataGenerator(algorithm);
-            Stream cos = comData.Open(bOut); // open it with the final destination
-            PgpLiteralDataGenerator lData = new PgpLiteralDataGenerator();
-
-            // we want to Generate compressed data. This might be a user option later,
-            // in which case we would pass in bOut.
-            Stream pOut = lData.Open(
-            cos,                    // the compressed output stream
-            PgpLiteralData.Binary,
-            fileName,               // "filename" to store
-            clearData.Length,       // length of clear data
-            DateTime.UtcNow         // current time
-            );
-
-            pOut.Write(clearData, 0, clearData.Length);
-            pOut.Close();
-
-            comData.Close();
-
-            return bOut.ToArray();
-        }
+        return bOut.ToArray();
     }
+
+    private static byte[] Compress(byte[] clearData, string fileName, CompressionAlgorithmTag algorithm)
+    {
+        MemoryStream bOut = new MemoryStream();
+
+        PgpCompressedDataGenerator comData = new PgpCompressedDataGenerator(algorithm);
+        Stream cos = comData.Open(bOut); // open it with the final destination
+        PgpLiteralDataGenerator lData = new PgpLiteralDataGenerator();
+
+        // we want to Generate compressed data. This might be a user option later,
+        // in which case we would pass in bOut.
+        Stream pOut = lData.Open(
+        cos,                    // the compressed output stream
+        PgpLiteralData.Binary,
+        fileName,               // "filename" to store
+        clearData.Length,       // length of clear data
+        DateTime.UtcNow         // current time
+        );
+
+        pOut.Write(clearData, 0, clearData.Length);
+        pOut.Close();
+
+        comData.Close();
+
+        return bOut.ToArray();
+    }
+}

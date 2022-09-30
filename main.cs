@@ -46,109 +46,113 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
     }
 
 
-    static void ValidateArgs(){
-        try{
-        //setting up logging
-        var tmp = o.Logtype.Split("::", 2);
-        var logType = tmp[0];
-        var logUri = tmp[1];
-        switch (logType)
+    static void ValidateArgs()
+    {
+        try
         {
-            case "hec":
-                try
-                {
-                    var hecUrl = new Uri(logUri);
-                    // hec::https://hecreceiver.splunk.com:8443/service/collector?source=temp&sourcetype=temp&index=temp&token=MYTOKEN&channel=MY_CHANNEL_UUID
-                    var hecParams = System.Web.HttpUtility.ParseQueryString(hecUrl.Query);
-                    var path = String.Format("{0}{1}{2}", hecUrl.Scheme, Uri.SchemeDelimiter, hecUrl.Authority, hecUrl.AbsolutePath);
-                    Log.Logger = new LoggerConfiguration()
-                    .MinimumLevel.Debug()
-                    .WriteTo.EventCollector(path + ":443", hecParams["token"], source: hecParams["source"],
-                    sourceType: hecParams["sourcetype"], index: hecParams["index"],
-                    host: System.Net.Dns.GetHostName(), renderTemplate: false)
-                    .CreateLogger();
-                    Console.WriteLine("writing logs to " + path + ":443");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("error", ex);
-                }
-                break;
-            case "system":
-                if (logUri.StartsWith("console"))
-                {
-                    Log.Logger = new LoggerConfiguration()
-                    .MinimumLevel.Debug()
-                    .WriteTo.Console()
-                    .CreateLogger();
-                }
-                if (logUri.StartsWith("file"))
-                {
+            //setting up logging
+            var tmp = o.Logtype.Split("::", 2);
+            var logType = tmp[0];
+            var logUri = tmp[1];
+            switch (logType)
+            {
+                case "hec":
                     try
                     {
-                        var fileUrl = new Uri(logUri);
+                        var hecUrl = new Uri(logUri);
+                        // hec::https://hecreceiver.splunk.com:8443/service/collector?source=temp&sourcetype=temp&index=temp&token=MYTOKEN&channel=MY_CHANNEL_UUID
+                        var hecParams = System.Web.HttpUtility.ParseQueryString(hecUrl.Query);
+                        var path = String.Format("{0}{1}{2}", hecUrl.Scheme, Uri.SchemeDelimiter, hecUrl.Authority, hecUrl.AbsolutePath);
                         Log.Logger = new LoggerConfiguration()
                         .MinimumLevel.Debug()
-                        .WriteTo.File(fileUrl.LocalPath)
+                        .WriteTo.EventCollector(path + ":443", hecParams["token"], source: hecParams["source"],
+                        sourceType: hecParams["sourcetype"], index: hecParams["index"],
+                        host: System.Net.Dns.GetHostName(), renderTemplate: false)
                         .CreateLogger();
-                        Console.WriteLine("writing logs to " + fileUrl.LocalPath);
+                        Console.WriteLine("writing logs to " + path + ":443");
                     }
                     catch (Exception ex)
                     {
                         Console.WriteLine("error", ex);
                     }
-                }
-                break;
-            case "azure-analytics":
-                var azureUrl = new Uri(logUri);
-                // azure-analytics::https://ods.opinsights.azure.com?workspaceId=MY_CUSTOMER_ID&authenticationId=MY_SHARED_KEY&logName=MY_LOG_NAME
-                var azureParams = System.Web.HttpUtility.ParseQueryString(azureUrl.Query);
-                Log.Logger = new LoggerConfiguration()
-                .MinimumLevel.Debug()
-                .WriteTo.AzureAnalytics(azureParams["workspaceId"], azureParams["authenticationId"])
-                .CreateLogger();
-                break;
-            default:
-                //todo: throw an error
-                Log.Fatal("Logging could not be setup.. exiting");
-                Environment.Exit(1);
-                break;
+                    break;
+                case "system":
+                    if (logUri.StartsWith("console"))
+                    {
+                        Log.Logger = new LoggerConfiguration()
+                        .MinimumLevel.Debug()
+                        .WriteTo.Console()
+                        .CreateLogger();
+                    }
+                    if (logUri.StartsWith("file"))
+                    {
+                        try
+                        {
+                            var fileUrl = new Uri(logUri);
+                            Log.Logger = new LoggerConfiguration()
+                            .MinimumLevel.Debug()
+                            .WriteTo.File(fileUrl.LocalPath)
+                            .CreateLogger();
+                            Console.WriteLine("writing logs to " + fileUrl.LocalPath);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine("error", ex);
+                        }
+                    }
+                    break;
+                case "azure-analytics":
+                    var azureUrl = new Uri(logUri);
+                    // azure-analytics::https://ods.opinsights.azure.com?workspaceId=MY_CUSTOMER_ID&authenticationId=MY_SHARED_KEY&logName=MY_LOG_NAME
+                    var azureParams = System.Web.HttpUtility.ParseQueryString(azureUrl.Query);
+                    Log.Logger = new LoggerConfiguration()
+                    .MinimumLevel.Debug()
+                    .WriteTo.AzureAnalytics(azureParams["workspaceId"], azureParams["authenticationId"])
+                    .CreateLogger();
+                    break;
+                default:
+                    //todo: throw an error
+                    Log.Fatal("Logging could not be setup.. exiting");
+                    Environment.Exit(1);
+                    break;
+            }
+
+            // set up the PGP key
+            tmp = o.EncryptionKey.Split("::", 2);
+            var gpgType = tmp[0];
+            var gpgUri = tmp[1];
+
+            switch (gpgType)
+            {
+                case "system":
+                    o.GpgKey = PGP.ReadPublicKey(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(new Uri(gpgUri).PathAndQuery))));
+                    Log.Information("Loaded GPG key from path");
+                    break;
+                case "url":
+                    using (var wc = new System.Net.WebClient())
+                        o.GpgKey = PGP.ReadPublicKey(new MemoryStream(Encoding.UTF8.GetBytes(wc.DownloadString(gpgUri))));
+                    Log.Information("Loaded GPG key from the URL");
+                    break;
+                case "base64":
+                    o.GpgKey = PGP.ReadPublicKey(new MemoryStream(Convert.FromBase64String(gpgUri)));
+                    Log.Information("Loaded GPG key from base64");
+                    break;
+                default:
+                    Log.Fatal("GPG could not be setup.. exiting");
+                    Environment.Exit(1);
+                    break;
+            }
         }
-
-        // set up the PGP key
-        tmp = o.EncryptionKey.Split("::", 2);
-        var gpgType = tmp[0];
-        var gpgUri = tmp[1];
-
-        switch (gpgType)
+        catch (Exception e)
         {
-            case "system":
-                o.GpgKey = PGP.ReadPublicKey(new MemoryStream(Encoding.UTF8.GetBytes(File.ReadAllText(new Uri(gpgUri).PathAndQuery))));
-                Log.Information("Loaded GPG key from path");
-            break;
-            case "url":
-                using (var wc = new System.Net.WebClient())
-                o.GpgKey = PGP.ReadPublicKey(new MemoryStream(Encoding.UTF8.GetBytes(wc.DownloadString(gpgUri))));
-                Log.Information("Loaded GPG key from the URL");
-            break;
-            case "base64":
-                o.GpgKey = PGP.ReadPublicKey(new MemoryStream(Convert.FromBase64String(gpgUri)));
-                Log.Information("Loaded GPG key from base64");
-            break;
-            default:
-            Log.Fatal("GPG could not be setup.. exiting");
-            Environment.Exit(1);
-            break;
-        }
-        }
-        catch (Exception e){
             Log.Fatal("Failed to validate Arguments.. exiting");
             Log.Fatal(e.ToString());
             Environment.Exit(1);
         }
     }
 
-    static void ExploitGuardEventListener(){
+    static void ExploitGuardEventListener()
+    {
 
         while (true)
         {
@@ -172,7 +176,8 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
             }
         }
     }
-    static void QuarantineEventListener(){
+    static void QuarantineEventListener()
+    {
 
         while (true)
         {
@@ -364,7 +369,11 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
             packedMalBytes = File.ReadAllBytes(quarFile);
             var unpacked = unpackMalware(packedMalBytes);
             // check length of the file and skip if too big
-            if (unpacked.malFileLength > 15000000){Log.Warning("File is too big for upload. skipping ... ");return "";};
+            if (unpacked.malFileLength > 15000000)
+            {
+                Log.Warning("File is too big for upload. skipping ... ");
+                return "";
+            };
             return System.Text.Encoding.Default.GetString(PGP.Encrypt(unpacked.malFile, o.GpgKey, true, true));
         }
         catch (Exception ex)
@@ -453,39 +462,49 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
 
     }
 
-    private static void ExploitGuardEventActionChain(System.Diagnostics.Eventing.Reader.EventRecord e){
+    private static void ExploitGuardEventActionChain(System.Diagnostics.Eventing.Reader.EventRecord e)
+    {
         // extract UUID
-       XmlDocument eventlog = new XmlDocument();
-       eventlog.LoadXml(e.ToXml());
-       string eventID = eventlog.SelectSingleNode("/*[local-name()='Event']/*[local-name()='EventData']/*[local-name()='Data'][@Name='ID']").InnerText;
-       if (eventID.Equals("01443614-CD74-433A-B99E-2ECDC07BFC25",StringComparison.OrdinalIgnoreCase)){
+        XmlDocument eventlog = new XmlDocument();
+        eventlog.LoadXml(e.ToXml());
+        string eventID = eventlog.SelectSingleNode("/*[local-name()='Event']/*[local-name()='EventData']/*[local-name()='Data'][@Name='ID']").InnerText;
+        if (eventID.Equals("01443614-CD74-433A-B99E-2ECDC07BFC25", StringComparison.OrdinalIgnoreCase))
+        {
             // extract the file from the filepath
             Log.Information("Event ID matches the filter.. starting process");
             string eventPath = eventlog.SelectSingleNode("/*[local-name()='Event']/*[local-name()='EventData']/*[local-name()='Data'][@Name='Path']").InnerText;
             // read the file into a bytearray
             // todo: size check happens here. 15MB is the max
-            if (new System.IO.FileInfo(eventPath).Length > 15000000){Log.Warning("File is too big for upload. skipping ... ");return;};
+            if (new System.IO.FileInfo(eventPath).Length > 15000000)
+            {
+                Log.Warning("File is too big for upload. skipping ... ");
+                return;
+            };
             byte[] fileBytes = File.ReadAllBytes(eventPath);
             // calculate sha256sum of the file 
-            using (SHA256 mySHA256 = SHA256.Create()){
-            byte[] sha256Value = mySHA256.ComputeHash(fileBytes);
+            using (SHA256 mySHA256 = SHA256.Create())
+            {
+                byte[] sha256Value = mySHA256.ComputeHash(fileBytes);
                 //dedup against uploadedExploitGuardHashes
-                if (uploadedExploitGuardHashes.Contains(sha256Value)){
+                if (uploadedExploitGuardHashes.Contains(sha256Value))
+                {
                     Log.Information("skipping duplicate upload");
-                } 
-                else{
+                }
+                else
+                {
                     // GPG encrypt the file and try to upload
-                    
+
                     var gpgEncryptedFile = System.Text.Encoding.Default.GetString(PGP.Encrypt(fileBytes, o.GpgKey, true, true));
-                    string filename = System.Net.Dns.GetHostName() + "--" + ToRfc3339StringNow() + "--" + System.Convert.ToBase64String(sha256Value)+ ".mal.pgp";
+                    string filename = System.Net.Dns.GetHostName() + "--" + ToRfc3339StringNow() + "--" + System.Convert.ToBase64String(sha256Value) + ".mal.pgp";
                     uploadFile(gpgEncryptedFile, filename, o.Archive);
                 }
-                
+
             }
-       } 
-       else{
+        }
+        else
+        {
             Log.Information("Event ID does not matches the filter.. skipping");
-       }
+        }
     }
 
     private static void QuarantineEventActionChain(string rawEvent)
@@ -552,7 +571,7 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
                     }
                     else
                     {
-                        uploadFile(grabQuarantineFile(offense), filename,  o.Archive);
+                        uploadFile(grabQuarantineFile(offense), filename, o.Archive);
                         uploadedHashes.Add(offense.hash);
                     }
                 }
@@ -588,7 +607,6 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
     {
         try
         {
-            
             // Log.Information(message);
             Log.Information("New Exploit Guard Event recieved, processing...");
             //todo: this should pass in the message and some checks should be done between the event and the parsed output
