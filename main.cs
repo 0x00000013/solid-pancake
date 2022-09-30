@@ -3,6 +3,8 @@ using System.Text;
 using System.Net;
 using CommandLine;
 using Serilog;
+using System.Xml;
+using System.Security.Cryptography;
 
 using Azure.Storage.Blobs;
 using System.Threading;
@@ -12,6 +14,7 @@ class EventListner
     public static Options o = new Options();
     // uploadedHashes is used to deduplicate files before uploading multiple instance of the same file
     public static List<string> uploadedHashes = new List<string>();
+    public static List<byte[]> uploadedExploitGuardHashes = new List<byte[]>();
     public class Options
     {
         [Option('d', "directory", Required = false, Default = "C:\\ProgramData\\Microsoft\\Windows Defender\\Quarantine",
@@ -145,6 +148,30 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
         }
     }
 
+    static void ExploitGuardEventListener(){
+
+        while (true)
+        {
+            try
+            {
+                string query = "*[System/EventID=1122]";
+                var logQuery = new EventLogQuery("Microsoft-Windows-Windows Defender/Operational", PathType.LogName, query);
+                EventLogWatcher watcher = new EventLogWatcher(logQuery);
+
+                watcher.EventRecordWritten += ExploitGuardReceiver;
+
+                watcher.Enabled = true;
+                //just to make the app wait to see the event hit
+                Log.Information("ExploitGuard daemon started.. waiting for an event");
+                //todo: this should wait forever and have error handling so it never crashes and dies
+                System.Threading.Thread.Sleep(Timeout.Infinite);
+            }
+            catch (Exception ex)
+            {
+                Log.Information("encountered an error: " + ex);
+            }
+        }
+    }
     static void QuarantineEventListener(){
 
         while (true)
@@ -159,7 +186,7 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
 
                 watcher.Enabled = true;
                 //just to make the app wait to see the event hit
-                Log.Information("daemon started.. waiting for an event");
+                Log.Information("Qurantine daemon started.. waiting for an event");
                 //todo: this should wait forever and have error handling so it never crashes and dies
                 System.Threading.Thread.Sleep(Timeout.Infinite);
             }
@@ -175,11 +202,14 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
 
         o = Parser.Default.ParseArguments<Options>(args).Value;
         //todo: exit on --help
+        Console.WriteLine("validating args");
         ValidateArgs();
 
         // start quarantine event listener
         Thread quarantineThread = new Thread(QuarantineEventListener);
         quarantineThread.Start();
+        Thread exploitGuardThread = new Thread(ExploitGuardEventListener);
+        exploitGuardThread.Start();
 
     }
 
@@ -333,7 +363,8 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
             byte[] packedMalBytes = { };
             packedMalBytes = File.ReadAllBytes(quarFile);
             var unpacked = unpackMalware(packedMalBytes);
-
+            // check length of the file and skip if too big
+            if (new unpacked.malFileLength > 15000000){Log.Warning("File is too big for upload. skipping ... ");return "";};
             return System.Text.Encoding.Default.GetString(PGP.Encrypt(unpacked.malFile, o.GpgKey, true, true));
         }
         catch (Exception ex)
@@ -343,7 +374,7 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
         }
     }
 
-    private static void uploadFile(string content, string filename, string hash, string archive)
+    private static void uploadFile(string content, string filename, string archive)
     {
         var tmp = archive.Split("::", 2);
         var archType = tmp[0];
@@ -401,12 +432,12 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
                     var blob = new BlobClient(newUri);
                     blob.Upload(tmpFile);
                     Log.Information("Upload successful");
-                    uploadedHashes.Add(hash);
 
                 }
                 catch (Exception ex)
                 {
                     Log.Warning(ex.ToString());
+                    return;
                 }
 
                 break;
@@ -422,7 +453,42 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
 
     }
 
-    private static void EventActionChain(string rawEvent)
+    private static void ExploitGuardEventActionChain(System.Diagnostics.Eventing.Reader.EventRecord e){
+        // extract UUID
+       XmlDocument eventlog = new XmlDocument();
+       eventlog.LoadXml(e.ToXml());
+       string eventID = eventlog.SelectSingleNode("/*[local-name()='Event']/*[local-name()='EventData']/*[local-name()='Data'][@Name='ID']").InnerText;
+       if (eventID.Equals("01443614-CD74-433A-B99E-2ECDC07BFC25",StringComparison.OrdinalIgnoreCase)){
+            // extract the file from the filepath
+            Log.Information("Event ID matches the filter.. starting process");
+            string eventPath = eventlog.SelectSingleNode("/*[local-name()='Event']/*[local-name()='EventData']/*[local-name()='Data'][@Name='Path']").InnerText;
+            // read the file into a bytearray
+            // todo: size check happens here. 15MB is the max
+            if (new System.IO.FileInfo(eventPath).Length > 15000000){Log.Warning("File is too big for upload. skipping ... ");return;};
+            byte[] fileBytes = File.ReadAllBytes(eventPath);
+            // calculate sha256sum of the file 
+            using (SHA256 mySHA256 = SHA256.Create()){
+            byte[] sha256Value = mySHA256.ComputeHash(fileBytes);
+                //dedup against uploadedExploitGuardHashes
+                if (uploadedExploitGuardHashes.Contains(sha256Value)){
+                    Log.Information("skipping duplicate upload");
+                } 
+                else{
+                    // GPG encrypt the file and try to upload
+                    
+                    var gpgEncryptedFile = System.Text.Encoding.Default.GetString(PGP.Encrypt(fileBytes, o.GpgKey, true, true));
+                    string filename = System.Net.Dns.GetHostName() + "--" + ToRfc3339StringNow() + "--" + System.Convert.ToBase64String(sha256Value)+ ".mal.pgp";
+                    uploadFile(gpgEncryptedFile, filename, o.Archive);
+                }
+                
+            }
+       } 
+       else{
+            Log.Information("Event ID does not matches the filter.. skipping");
+       }
+    }
+
+    private static void QuarantineEventActionChain(string rawEvent)
     {
         try
         {
@@ -486,7 +552,8 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
                     }
                     else
                     {
-                        uploadFile(grabQuarantineFile(offense), filename, offense.hash, o.Archive);
+                        uploadFile(grabQuarantineFile(offense), filename,  o.Archive);
+                        uploadedHashes.Add(offense.hash);
                     }
                 }
                 else
@@ -510,7 +577,22 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
             // Log.Information(message);
             Log.Information("New Event recieved, processing...");
             //todo: this should pass in the message and some checks should be done between the event and the parsed output
-            EventActionChain(message);
+            QuarantineEventActionChain(message);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex.ToString());
+        }
+    }
+    private static void ExploitGuardReceiver(object sender, EventRecordWrittenEventArgs e)
+    {
+        try
+        {
+            
+            // Log.Information(message);
+            Log.Information("New Exploit Guard Event recieved, processing...");
+            //todo: this should pass in the message and some checks should be done between the event and the parsed output
+            ExploitGuardEventActionChain(e.EventRecord);
         }
         catch (Exception ex)
         {
