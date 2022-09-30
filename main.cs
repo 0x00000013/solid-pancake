@@ -364,7 +364,7 @@ base64::LS0tLS1CRUdJTiBQR1AgUFVCTElDIEtFWSBCTE9DSy0tLS0tCgo....gUFVCTElDIEtFWSBC
             packedMalBytes = File.ReadAllBytes(quarFile);
             var unpacked = unpackMalware(packedMalBytes);
             // check length of the file and skip if too big
-            if (new unpacked.malFileLength > 15000000){Log.Warning("File is too big for upload. skipping ... ");return "";};
+            if (unpacked.malFileLength > 15000000){Log.Warning("File is too big for upload. skipping ... ");return "";};
             return System.Text.Encoding.Default.GetString(PGP.Encrypt(unpacked.malFile, o.GpgKey, true, true));
         }
         catch (Exception ex)
